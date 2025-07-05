@@ -1,0 +1,113 @@
+# ===========================================
+# Python .gitignore (Standard Template)
+# ===========================================
+
+# --- Virtual Environments ---
+# Local Python environment directories
+venv/
+.env/
+.venv/
+env/
+
+# --- Python Generated Files ---
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# --- Build and Distribution Artifacts ---
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer distribution files
+build/
+dist/
+*.egg-info/
+*.egg
+*.wheel
+
+# --- Package Manager Specific ---
+# pipenv
+Pipfile
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+__pypackages__/
+
+# --- Configuration and Secrets ---
+# Environment variables
+.env
+.env.*
+.envrc
+
+# Configuration files
+config.ini
+secrets.py
+local_settings.py
+config.py
+instance/
+
+# --- Testing and Debugging ---
+# pytest
+.pytest_cache/
+.mypy_cache/
+.pytype/
+
+# Coverage reports
+coverage.xml
+*.cover
+
+# Debugging
+*.log
+*.prof
+
+# --- IDE and Editor Files ---
+# Visual Studio Code
+.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm/IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# macOS
+.DS_Store
+
+# --- Other Tools ---
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Sphinx
+docs/_build/
+
+# mypy
+.mypy_cache/
