@@ -6,11 +6,13 @@ from qiskit_aer import StatevectorSimulator
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-class TiltedIsingEvolution:
+class TiltedIsingChain:
+    """Tilted Ising Chain exact simulation using qutip
+    """
     def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01):
         """
-        Initialize the weakly tilted Ising chain evolution simulator
-        
+        Initialize the weakly tilted Ising chain
+
         Args:
             num_qubits: Number of spins in the chain
             h_z: Strength of longitudinal field (sigma_z term)
@@ -87,7 +89,7 @@ class TiltedIsingEvolution:
         H_flip = self.H_flip()
         
         total_time = num_cycles * self.T
-        time_points = np.arange(0,total_time,self.T)
+        time_points = np.arange(0,total_time,self.T/10)
         # Convert string input to quantum state
         if isinstance(initial_state, str):
             # Check length matches number of qubits
@@ -119,20 +121,22 @@ class TiltedIsingEvolution:
                 return 0.0 
             else:
                 return 1.0  # flip hamiltonian during second half
-
-        # Solve time-dependent evolution
+        from utils import smooth_square_wave
+        # Create time-dependent Hamiltonian
+        static_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.5)
+        flip_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.0)
+        
         floquent_H = [[H1,static_time_function],[H_flip,flip_time_function]]
-        result = qt.sesolve(floquent_H, initial_state, time_points)
+        result = qt.mesolve(floquent_H, initial_state, time_points)
         return result.states
     
-    def plot_heatmap(self, initial_state, num_cycles=50, cmap='bwr'):
+    def calculate_megnetizations(self, initial_state, num_cycles=50):
         """
-        Plot magnetization heatmap in exact simulation
+        Calculate magnetization versus time in exact simulation
         
         Args:
             initial_state: Initial quantum state as qt.Qobj or bitstring (e.g., "1010")
             num_cycles: Number of evolution cycles
-            cmap: Color map (default: blue-white-red)
         """
         # Get states data
         data = self.exact_time_evolution(initial_state, num_cycles)
@@ -144,7 +148,19 @@ class TiltedIsingEvolution:
             op_list[i] = qt.sigmaz()
             e_ops.append(qt.tensor(op_list))
         mag_data = qt.expect(e_ops,data)
+        return mag_data
 
+    def plot_heatmap(self, initial_state, num_cycles=50, cmap='bwr'):
+        """
+        Plot magnetization heatmap in exact simulation
+        
+        Args:
+            initial_state: Initial quantum state as qt.Qobj or bitstring (e.g., "1010")
+            num_cycles: Number of evolution cycles
+            cmap: Color map (default: blue-white-red)
+        """
+        
+        mag_data = self.calculate_megnetizations(initial_state,num_cycles)
         # Create figure
         plt.figure(figsize=(10, 6))
         
@@ -179,6 +195,28 @@ class TiltedIsingEvolution:
         
         plt.tight_layout()
         plt.show()
+
+
+class IsingChainSimulation:
+    """circuit simulation of Ising Chain using qiskit
+    """
+    def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01):
+        """
+        Initialize the weakly tilted Ising chain evolution simulator
+        
+        Args:
+            num_qubits: Number of spins in the chain
+            h_z: Strength of longitudinal field (sigma_z term)
+            J: Coupling strength between nearest neighbors
+            h_y: Strength of transverse field (sigma_y term)
+            epsilon: Small parameter for spin-flip precision
+        """
+        self.num_qubits = num_qubits
+        self.h_z = h_z
+        self.J = J
+        self.h_y = h_y
+        self.epsilon = epsilon
+        self.T = 2.0  # Total period time
 
     def build_trotter_step_circuit(self):
         """Build a single Trotter step circuit"""
@@ -232,7 +270,7 @@ class TiltedIsingEvolution:
 
         # Apply rotation: Ry
         for i in range(self.num_qubits):
-            qc.ry(2*self.h_y, i)
+            qc.ry(2*self.h_y*time, i)
         qc.barrier()
         return qc
     
@@ -245,14 +283,14 @@ class TiltedIsingEvolution:
         
         # Apply nearest-neighbor ZZ interactions
         for i in range(0,self.num_qubits - 1,2):
-            qc.rzz(4 * self.J * time, i, i+1)  # Rzz(φ) = exp(-i φ/2 Z⊗Z)
+            qc.rzz(2 * self.J * time, i, i+1)  # Rzz(φ) = exp(-i φ/2 Z⊗Z)
                         
         for i in range(1,self.num_qubits - 1,2):
-            qc.rzz(4 * self.J * time, i, i+1)  # Rzz(φ) = exp(-i φ/2 Z⊗Z)
+            qc.rzz(2 * self.J * time, i, i+1)  # Rzz(φ) = exp(-i φ/2 Z⊗Z)
                         
         # Apply rotation: Rz
         for i in range(self.num_qubits):
-            qc.ry(2*self.h_z, i)
+            qc.rz(2*self.h_z*time, i)
         qc.barrier()    
         return qc
     
@@ -284,10 +322,8 @@ class TiltedIsingEvolution:
         
         # build circuit in each period
         trotter_step_circ = self.build_trotter_step_circuit()
-        flip_circ = self.build_flip_circuit()
         for _ in range(num_cycles):
             qc.compose(trotter_step_circ, qubits=qr, inplace=True)
-            # qc.compose(flip_circ,inplace=True)
 
         # Add measurements for simulation
         qc.barrier()
@@ -350,10 +386,10 @@ class TiltedIsingEvolution:
                         minus_amp += abs(amplitude)**2
                 
                 mag_data[site, t] = plus_amp - minus_amp
-                
+        mag_data = np.flipud(mag_data)  # Reverses rows so site0 becomes top row
         return mag_data
     
-    def create_heatmap(self, mag_data, num_cycles):
+    def create_heatmap(self, mag_data, num_cycles,cmap='bwr'):
         """
         Create magnetization heatmap matching reference figure
         
@@ -365,7 +401,7 @@ class TiltedIsingEvolution:
         
         # Create heatmap
         im = plt.imshow(mag_data,
-                       cmap='RdBu',
+                       cmap=cmap,
                        aspect='auto',
                        origin='lower',
                        vmin=-1.0,
@@ -392,10 +428,10 @@ class TiltedIsingEvolution:
             plt.axvline(x=pos, color='lightgray', linestyle='-', alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig('magnetization_heatmap.png', dpi=120)
+        # plt.savefig('magnetization_heatmap.png', dpi=120)
         plt.show()
 
-    def plot_magnetization(self, initial_state, num_cycles=50):
+    def plot_heatmap(self, initial_state, num_cycles=50):
         """
         Simulate evolution and plot magnetization heatmap
         
