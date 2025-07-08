@@ -140,7 +140,7 @@ def smooth_square_wave(t, vmin, vmax, period, phase=0.0, n_terms=100):
     ω = 2 * np.pi / period
     
     # Initialize result
-    result = np.zeros_like(t)
+    result = 0.0
     
     # Sum Fourier series
     for m in range(1, n_terms + 1):

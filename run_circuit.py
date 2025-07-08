@@ -1,8 +1,8 @@
 import numpy as np
 import qutip as qt
-from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister,transpile
 from qiskit.quantum_info import Statevector
-from qiskit_aer import StatevectorSimulator
+from qiskit_aer import StatevectorSimulator,AerSimulator
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -89,7 +89,7 @@ class TiltedIsingChain:
         H_flip = self.H_flip()
         
         total_time = num_cycles * self.T
-        time_points = np.arange(0,total_time,self.T/10)
+        time_points = np.arange(0,total_time,self.T)
         # Convert string input to quantum state
         if isinstance(initial_state, str):
             # Check length matches number of qubits
@@ -121,13 +121,13 @@ class TiltedIsingChain:
                 return 0.0 
             else:
                 return 1.0  # flip hamiltonian during second half
-        from utils import smooth_square_wave
-        # Create time-dependent Hamiltonian
-        static_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.5)
-        flip_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.0)
+        # from utils import smooth_square_wave
+        # # Create time-dependent Hamiltonian
+        # static_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.5)
+        # flip_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.0)
         
         floquent_H = [[H1,static_time_function],[H_flip,flip_time_function]]
-        result = qt.mesolve(floquent_H, initial_state, time_points)
+        result = qt.mesolve(floquent_H, initial_state, time_points,progress_bar='tqdm')
         return result.states
     
     def calculate_megnetizations(self, initial_state, num_cycles=50):
@@ -196,6 +196,72 @@ class TiltedIsingChain:
         plt.tight_layout()
         plt.show()
 
+    def correlation_one_site(self, initial_state, site_index, num_cycles=50):
+        """
+        Calculate one-site correlation function in exact simulation
+
+        Args:
+            initial_state: Initial quantum state as qt.Qobj or bitstring (e.g., "1010")
+            num_cycles: Number of evolution cycles
+        """
+        # Convert string input to quantum state
+        if isinstance(initial_state, str):
+            # Check length matches number of qubits
+            if len(initial_state) != self.num_qubits:
+                raise ValueError(f"Bitstring length ({len(initial_state)}) doesn't match"
+                                f" number of qubits ({self.num_qubits})")
+            
+            # Create computational basis state
+            basis_states = []
+            for bit in initial_state:
+                if bit == '0':
+                    basis_states.append(qt.basis(2, 0))
+                elif bit == '1':
+                    basis_states.append(qt.basis(2, 1))
+                else:
+                    raise ValueError(f"Invalid character '{bit}' in bitstring - must be 0 or 1")
+            
+            initial_state = qt.tensor(basis_states)
+
+        assert 0 <= site_index < self.num_qubits, "Site index out of bounds"
+        op_list = [qt.qeye(2)] * self.num_qubits
+        op_list[site_index] = qt.sigmaz()
+        ops = qt.tensor(op_list)
+
+        # Build full Hamiltonian operators
+        H1 = self.H1
+        H_flip = self.H_flip()
+        def static_time_function(t, args):
+            phase = t % self.T
+            if phase < self.T / 2:
+                return 1.0  # static hamiltonian during first half
+            else:
+                return 0.0
+        def flip_time_function(t, args):
+            phase = t % self.T
+            if phase < self.T / 2:
+                return 0.0 
+            else:
+                return 1.0  # flip hamiltonian during second half
+        floquent_H = [[H1,static_time_function],[H_flip,flip_time_function]]
+        # calculate correlation function
+        t_list = np.arange(0, num_cycles * self.T, self.T)
+        result = qt.correlation_2op_1t(floquent_H, initial_state, t_list, [], ops, ops,options={"progress_bar":"tqdm"})
+        return result
+
+    def hamming_distance(self, initial_state, num_cycles=50):
+        """
+        Calculate Hamming distance between in exact simulation
+        Args:
+            initial_state: Initial quantum state as qt.Qobj or bitstring (e.g., "1010")
+            num_cycles: Number of evolution cycles
+        """
+        distance = 0.0
+        for i in tqdm(range(2,self.num_qubits-2)):
+            one_site_corr = self.correlation_one_site(initial_state, i, num_cycles)
+            distance += one_site_corr
+        distance = (1- distance / (self.num_qubits - 4)) / 2.0
+        return distance
 
 class IsingChainSimulation:
     """circuit simulation of Ising Chain using qiskit
@@ -218,12 +284,12 @@ class IsingChainSimulation:
         self.epsilon = epsilon
         self.T = 2.0  # Total period time
 
-    def build_trotter_step_circuit(self):
+    def build_trotter_step_circuit(self, is_barrier=True):
         """Build a single Trotter step circuit"""
         qc = QuantumCircuit(self.num_qubits)
         
         # First part: e^{-i H1 (T/2)} for half period
-        qc.compose(self.build_H1_circuit(self.T / 2), inplace=True)
+        qc.compose(self.build_H1_circuit(self.T / 2, is_barrier=is_barrier), inplace=True)
         
         # Second part: Spin-flip operators for half period
         qc.compose(self.build_flip_circuit(),inplace=True)
@@ -241,7 +307,7 @@ class IsingChainSimulation:
             
         return qc
 
-    def build_H1_circuit(self, tau):
+    def build_H1_circuit(self, tau, is_barrier=True):
         """
         Build symmetric Trotter decomposition for H₁ evolution for time τ
         following the scheme: e^{-i H_1 τ} ≈ e^{-i A τ/4} e^{-i B τ/2} e^{-i A τ/2} e^{-i B τ/2} e^{-i A τ/4}
@@ -253,15 +319,15 @@ class IsingChainSimulation:
         t2 = tau / 2  # τ/2
         
         # Apply symmetric decomposition
-        qc.compose(self.build_A_circuit(t1), inplace=True)  # e^{-i A τ/4}
-        qc.compose(self.build_B_circuit(t2), inplace=True)  # e^{-i B τ/2}
-        qc.compose(self.build_A_circuit(t2), inplace=True)  # e^{-i A τ/2}
-        qc.compose(self.build_B_circuit(t2), inplace=True)  # e^{-i B τ/2}
-        qc.compose(self.build_A_circuit(t1), inplace=True)  # e^{-i A τ/4}
-        
+        qc.compose(self.build_A_circuit(t1, is_barrier), inplace=True)  # e
+        qc.compose(self.build_B_circuit(t2, is_barrier), inplace=True)  # e
+        qc.compose(self.build_A_circuit(t2, is_barrier), inplace=True)  # e
+        qc.compose(self.build_B_circuit(t2, is_barrier), inplace=True)  # e
+        qc.compose(self.build_A_circuit(t1, is_barrier), inplace=True)  # e^{-i A τ/4}
+
         return qc
     
-    def build_A_circuit(self, time):
+    def build_A_circuit(self, time,is_barrier=True):
         """
         Build circuit for exp(-i A time) where
         A = ∑_i (h_y sigma_i^y)
@@ -271,10 +337,11 @@ class IsingChainSimulation:
         # Apply rotation: Ry
         for i in range(self.num_qubits):
             qc.ry(2*self.h_y*time, i)
-        qc.barrier()
+        if is_barrier:
+            qc.barrier()
         return qc
     
-    def build_B_circuit(self, time):
+    def build_B_circuit(self, time,is_barrier=True):
         """
         Build circuit for exp(-i B time) where
         B = ∑_i J sigma_i^z sigma_{i+1}^z + h_z sigma_i^z
@@ -291,10 +358,11 @@ class IsingChainSimulation:
         # Apply rotation: Rz
         for i in range(self.num_qubits):
             qc.rz(2*self.h_z*time, i)
-        qc.barrier()    
+        if is_barrier:
+            qc.barrier()    
         return qc
-    
-    def build_full_circuit(self, initial_state, num_cycles=1, is_measure=True):
+
+    def build_full_circuit(self, initial_state, num_cycles=1, is_barrier=True, is_measure=True):
         """
         Build quantum circuit for full evolution
         
@@ -321,7 +389,7 @@ class IsingChainSimulation:
             qc.barrier()
         
         # build circuit in each period
-        trotter_step_circ = self.build_trotter_step_circuit()
+        trotter_step_circ = self.build_trotter_step_circuit(is_barrier)
         for _ in range(num_cycles):
             qc.compose(trotter_step_circ, qubits=qr, inplace=True)
 
@@ -330,6 +398,49 @@ class IsingChainSimulation:
         if is_measure:
             qc.measure(qr, cr)
         
+        return qc
+
+    def build_echo_circuit(self, initial_state, num_cycles=1, is_barrier=True, is_measure=True):
+        """
+        Build echo circuit for time-reversal symmetry
+
+        Args:
+            initial_state: Bitstring for initial state (e.g., '0101')
+            num_cycles: Number of evolution cycles
+            is_barrier: Whether to include barriers
+            is_measure: Whether to include measurements
+
+        Returns:
+            QuantumCircuit: Echo circuit
+        """
+        # Create quantum register and circuit
+        qr = QuantumRegister(self.num_qubits, 'q')
+        cr = ClassicalRegister(self.num_qubits, 'c')
+        qc = QuantumCircuit(qr, cr)
+
+        # Initialize state from bitstring
+        if initial_state:
+            if len(initial_state) != self.num_qubits:
+                raise ValueError(f"Initial state length must be {self.num_qubits}")
+
+            for i, bit in enumerate(initial_state):
+                if bit == '1':
+                    qc.x(qr[i])
+            qc.barrier()
+
+        # build circuit in each period
+        trotter_step_circ = self.build_trotter_step_circuit(is_barrier)
+        for _ in range(num_cycles):
+            qc.compose(trotter_step_circ, qubits=qr, inplace=True)
+        # Add echo operation: reverse the circuit
+        for _ in range(num_cycles):
+            qc.compose(trotter_step_circ.inverse(), qubits=qr, inplace=True)
+        # qc.compose(qc.inverse(), qubits=qr, inplace=True)  # Reverse the entire circuit
+        # Add measurements for simulation
+        qc.barrier()
+        if is_measure:
+            qc.measure(qr, cr)
+
         return qc
 
     def simulate_statevector_evolution(self, initial_state, num_cycles=50):
@@ -397,7 +508,7 @@ class IsingChainSimulation:
             mag_data: 2D array of magnetizations
             num_cycles: Number of evolution cycles
         """
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(10, 6))
         
         # Create heatmap
         im = plt.imshow(mag_data,
@@ -433,7 +544,7 @@ class IsingChainSimulation:
 
     def plot_heatmap(self, initial_state, num_cycles=50):
         """
-        Simulate evolution and plot magnetization heatmap
+        Simulate evolution without noise and plot magnetization heatmap
         
         Args:
             initial_state: Initial state as bitstring
@@ -448,3 +559,399 @@ class IsingChainSimulation:
         
         # Create heatmap similar to reference image
         self.create_heatmap(mag_data, num_cycles)
+
+    def plot_heatmap_with_noise(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+        """
+        Simulate evolution with noise and plot magnetization heatmap
+        
+        Args:
+            initial_state: Initial state as bitstring
+            noise_model: Noise model for simulation, None uses default
+            num_cycles: Number of evolution cycles
+            shots: Number of shots for each cycle
+            
+        """
+        if noise_model is None:
+            from qiskit_noise_model import get_noise_model
+            noise_model = get_noise_model()
+        # Simulate with noise model
+        magnetization_time_2d = self.simulate_with_noise(initial_state, noise_model, num_cycles, shots)
+        
+        # Create heatmap similar to reference image
+        self.create_heatmap(magnetization_time_2d, num_cycles)
+
+    def plot_heatmap_normalized(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+        """
+        Simulate evolution with noise and plot normalized magnetization heatmap.
+        This normalizes the magnetization by the echo circuit evolution
+        Args:
+            initial_state: Initial state as bitstring
+            noise_model: Noise model for simulation, None uses default
+            num_cycles: Number of evolution cycles
+            shots: Number of shots for each cycle
+            
+        """
+        if noise_model is None:
+            from qiskit_noise_model import get_noise_model
+            noise_model = get_noise_model()
+        
+        # Simulate echo circuit with noise model
+        magnetization_time_noise = self.simulate_with_noise(initial_state, noise_model, num_cycles, shots)
+        magnetization_time_echo = self.simulate_echo_circuit(initial_state, noise_model, num_cycles, shots)
+        magnetization_time_normalized = magnetization_time_noise/np.sqrt(np.abs(magnetization_time_echo))
+
+        # Create heatmap similar to reference image
+        self.create_heatmap(magnetization_time_normalized, num_cycles)
+
+    def simulate_with_noise(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+        if noise_model is None:
+            from qiskit_noise_model import get_noise_model
+            noise_model = get_noise_model()
+        simulator = AerSimulator(noise_model=noise_model)
+        magnetization_time_2d = np.zeros((self.num_qubits, num_cycles))
+        for i in tqdm(range(num_cycles)):
+            qc = self.build_full_circuit(initial_state, i, is_barrier=False, is_measure=True)
+            qc_transpiled = transpile(qc, basis_gates=['u3', 'cp'], optimization_level=3)
+            job = simulator.run(qc_transpiled,shots=shots)
+            result = job.result()
+            counts = result.get_counts()
+            expectations = [0.0] * self.num_qubits
+            for bitstring, freq in counts.items():
+                for q in range(self.num_qubits):
+                    # each qubit expection: ⟨Z⟩ = P(0) - P(1)
+                    bit = int(bitstring[self.num_qubits - 1 - q])  # reverse order
+                    expectations[q] += ((-1)**bit) * (freq / shots)
+            magnetization_time_2d[:, i] = expectations
+        
+        return magnetization_time_2d
+
+    def simulate_echo_circuit(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+        """
+        Simulate echo circuit evolution with noise
+        
+        Args:
+            initial_state: Initial state as bitstring
+            noise_model: Noise model for simulation
+            num_cycles: Number of evolution cycles
+            shots: Number of shots for each cycle
+            
+        Returns:
+            2D array of magnetizations over time
+        """
+        if noise_model is None:
+            from qiskit_noise_model import get_noise_model
+            noise_model = get_noise_model()
+        
+        simulator = AerSimulator(noise_model=noise_model)
+        magnetization_time_2d = np.zeros((self.num_qubits, num_cycles))
+        
+        for i in tqdm(range(num_cycles)):
+            qc = self.build_echo_circuit(initial_state, i, is_barrier=False, is_measure=True)
+            qc_transpiled = transpile(qc, basis_gates=['u3', 'cp'], optimization_level=3)
+            job = simulator.run(qc_transpiled, shots=shots)
+            result = job.result()
+            counts = result.get_counts()
+            
+            expectations = [0.0] * self.num_qubits
+            for bitstring, freq in counts.items():
+                for q in range(self.num_qubits):
+                    # each qubit expectation: ⟨Z⟩ = P(0) - P(1)
+                    bit = int(bitstring[self.num_qubits - 1 - q])
+                    expectations[q] += ((-1)**bit) * (freq / shots)
+            magnetization_time_2d[:, i] = expectations
+
+        return magnetization_time_2d
+
+    def plot_heatmap_echo(self, initial_state, num_cycles=50):
+        """
+        Plot magnetization heatmap
+        """
+        magnetization_time_2d = self.simulate_echo_circuit(initial_state, num_cycles=num_cycles)
+        self.create_heatmap(magnetization_time_2d, num_cycles)
+
+def plot_heatmap_theory(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50):
+    """
+    Plot magnetization heatmap for theoretical simulation
+    
+    Args:
+        num_qubits: Number of spins in the chain
+        h_z: Strength of longitudinal field (sigma_z term)
+        J: Coupling strength between nearest neighbors
+        h_y: Strength of transverse field (sigma_y term)
+        epsilon: Small parameter for spin-flip precision
+        initial_state: Initial quantum state as bitstring (e.g., "1010")
+        num_cycles: Number of evolution cycles
+    """
+    
+    # Create exact simulation object
+    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon)
+    
+    # Calculate magnetizations
+    mag_data = exact_sim.calculate_megnetizations(initial_state, num_cycles)
+    
+    # Plot heatmap
+    exact_sim.plot_heatmap(initial_state, num_cycles)
+
+def plot_heatmap_circuit(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50):
+    """
+    Plot magnetization heatmap for circuit simulation
+    
+    Args:
+        num_qubits: Number of spins in the chain
+        h_z: Strength of longitudinal field (sigma_z term)
+        J: Coupling strength between nearest neighbors
+        h_y: Strength of transverse field (sigma_y term)
+        epsilon: Small parameter for spin-flip precision
+        initial_state: Initial quantum state as bitstring (e.g., "1010")
+        num_cycles: Number of evolution cycles
+    """
+    
+    # Create circuit simulation object
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    
+    # Simulate and plot heatmap
+    circuit_sim.plot_heatmap(initial_state, num_cycles)
+
+def plot_heatmap_circuit_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model=None):
+    """
+    Plot magnetization heatmap for circuit simulation with noise
+    
+    Args:
+        num_qubits: Number of spins in the chain
+        h_z: Strength of longitudinal field (sigma_z term)
+        J: Coupling strength between nearest neighbors
+        h_y: Strength of transverse field (sigma_y term)
+        epsilon: Small parameter for spin-flip precision
+        initial_state: Initial quantum state as bitstring (e.g., "1010")
+        num_cycles: Number of evolution cycles
+        noise_model: Noise model for simulation (default: None)
+    """
+    
+    # Create circuit simulation object
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    
+    # Simulate and plot heatmap with noise
+    circuit_sim.plot_heatmap_with_noise(initial_state, noise_model, num_cycles)
+
+def compare_difference(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50):
+    """
+    Compare exact simulation with circuit simulation
+    
+    Args:
+        num_qubits: Number of spins in the chain
+        h_z: Strength of longitudinal field (sigma_z term)
+        J: Coupling strength between nearest neighbors
+        h_y: Strength of transverse field (sigma_y term)
+        epsilon: Small parameter for spin-flip precision
+        initial_state: Initial quantum state as bitstring (e.g., "1010")
+        num_cycles: Number of evolution cycles
+    """
+    
+    # Exact simulation using QuTiP
+    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon)
+    exact_magnetizations = exact_sim.calculate_megnetizations(initial_state, num_cycles)
+    
+    # Circuit simulation using Qiskit
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    circuit_state = circuit_sim.simulate_statevector_evolution(initial_state, num_cycles)
+    circuit_magnetizations = circuit_sim.calculate_magnetizations(circuit_state)
+
+    # Plot both results side by side for comparison
+    plt.figure(figsize=(12, 6))
+    
+    plt.subplot(1, 3, 1)
+    plt.imshow(exact_magnetizations,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Exact Simulation Magnetization")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+    
+    plt.subplot(1, 3, 2)
+    plt.imshow(circuit_magnetizations,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Circuit Simulation Magnetization")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+
+    plt.subplot(1, 3, 3)
+    plt.imshow(circuit_magnetizations- exact_magnetizations,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Difference (Circuit - Exact)")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+
+    plt.tight_layout()
+    plt.show()
+
+    print("Max difference:", np.max(np.abs(circuit_magnetizations - exact_magnetizations)))
+
+def compare_difference_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model=None):
+    """
+    Compare exact simulation with circuit simulation with noise
+    
+    Args:
+        num_qubits: Number of spins in the chain
+        h_z: Strength of longitudinal field (sigma_z term)
+        J: Coupling strength between nearest neighbors
+        h_y: Strength of transverse field (sigma_y term)
+        epsilon: Small parameter for spin-flip precision
+        initial_state: Initial quantum state as bitstring (e.g., "1010")
+        num_cycles: Number of evolution cycles
+        noise_model: Noise model for simulation (default: None)
+    """
+    
+    # Exact simulation using QuTiP
+    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon)
+    exact_magnetizations = exact_sim.calculate_megnetizations(initial_state, num_cycles)
+    
+    # Circuit simulation using Qiskit
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    circuit_state = circuit_sim.simulate_statevector_evolution(initial_state, num_cycles)
+    circuit_magnetizations = circuit_sim.calculate_magnetizations(circuit_state)
+
+    # Circuit simulation with noise using Qiskit
+    # circuit_sim_noisy = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    circuit_magnetizations_noisy = circuit_sim.simulate_with_noise(initial_state, noise_model, num_cycles)
+    # Plot both results side by side for comparison
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 3, 1)
+    plt.imshow(exact_magnetizations,
+                cmap='bwr',
+                aspect='auto',
+                origin='lower',
+                vmin=-1.0,
+                vmax=1.0,
+                extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Exact Simulation Magnetization")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+
+    plt.subplot(1, 3, 2)
+    plt.imshow(circuit_magnetizations,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Circuit Simulation Magnetization")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+
+    plt.subplot(1, 3, 3)
+    plt.imshow(circuit_magnetizations_noisy,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Circuit Simulation with Noise")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+    plt.tight_layout()
+    plt.show()
+
+def compare_difference_with_noise_echo(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model=None):
+    """
+    Compare exact simulation with circuit simulation with noise and echo circuit
+    
+    Args:
+        num_qubits: Number of spins in the chain
+        h_z: Strength of longitudinal field (sigma_z term)
+        J: Coupling strength between nearest neighbors
+        h_y: Strength of transverse field (sigma_y term)
+        epsilon: Small parameter for spin-flip precision
+        initial_state: Initial quantum state as bitstring (e.g., "1010")
+        num_cycles: Number of evolution cycles
+        noise_model: Noise model for simulation (default: None)
+    """
+    
+    # Exact simulation using QuTiP
+    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon)
+    exact_magnetizations = exact_sim.calculate_megnetizations(initial_state, num_cycles)
+    
+    # Circuit simulation using Qiskit
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    circuit_state = circuit_sim.simulate_statevector_evolution(initial_state, num_cycles)
+    circuit_magnetizations = circuit_sim.calculate_magnetizations(circuit_state)
+
+    # Circuit simulation with noise using Qiskit
+    circuit_magnetizations_noisy = circuit_sim.simulate_with_noise(initial_state, noise_model, num_cycles)
+
+    # Circuit simulation normalized with echo circuit
+    circuit_magnetizations_echo = circuit_sim.simulate_echo_circuit(initial_state, noise_model, num_cycles)
+    circuit_magnetizations_normalized = circuit_magnetizations_noisy / np.sqrt(np.abs(circuit_magnetizations_echo))
+    # Plot both results side by side for comparison
+    plt.figure(figsize=(20, 6))
+    plt.subplot(1, 4, 1)
+    plt.imshow(exact_magnetizations,
+                cmap='bwr',
+                aspect='auto',
+                origin='lower',
+                vmin=-1.0,
+                vmax=1.0,
+                extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Exact Simulation Magnetization")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+    plt.subplot(1, 4, 2)
+    plt.imshow(circuit_magnetizations,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Circuit Simulation Magnetization")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+    plt.subplot(1, 4, 3)
+    plt.imshow(circuit_magnetizations_noisy,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Circuit Simulation with Noise")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+    plt.subplot(1, 4, 4)
+    plt.imshow(circuit_magnetizations_normalized,
+               cmap='bwr',
+               aspect='auto',
+               origin='lower',
+               vmin=-1.0,
+               vmax=1.0,
+               extent=[0, num_cycles, 0, num_qubits])
+    plt.title("Circuit Simulation Normalized")
+    plt.xlabel("Period")
+    plt.ylabel("Site Index")
+    plt.colorbar(label=r'$\langle \sigma_z \rangle$')
+    plt.tight_layout()
+    plt.show()
