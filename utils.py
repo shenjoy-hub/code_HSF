@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 def smooth_step(x, x0=0, width=1, ymin=0, ymax=1, direction='up'):
     """
@@ -153,34 +154,78 @@ def smooth_square_wave(t, vmin, vmax, period, phase=0.0, n_terms=100):
     
     return result
 
-# Example usage and visualization
+def fourier_transform(x, y, do_plot=True):
+    """
+    Compute and optionally plot the Fourier transform of a signal.
+    
+    Parameters:
+        x (array_like): Time domain values (uniformly sampled)
+        y (array_like): Signal amplitudes corresponding to time values
+        do_plot (bool): If True, generates time-domain and frequency-domain plots
+    
+    Returns:
+        freqs (ndarray): Frequency values (two-sided or one-sided)
+        magnitude (ndarray): Magnitude of Fourier transform components
+    """
+    # Validate inputs
+    if len(x) != len(y):
+        raise ValueError("x and y must have the same length")
+    
+    # Calculate time step and check uniformity
+    dt = np.mean(np.diff(x))
+    if not np.allclose(np.diff(x), dt, rtol=1e-5, atol=1e-8):
+        raise ValueError("Time samples must be uniformly spaced")
+    
+    N = len(y)  # Number of samples
+    
+    # Compute FFT and normalize magnitudes
+    fft_vals = np.fft.fft(y)
+    magnitude = np.abs(fft_vals) / N  # Normalized magnitude
+    
+    # Frequency calculations
+    freqs = np.fft.fftfreq(N, dt)  # Two-sided frequencies
+    
+    # Create one-sided representation
+    pos_idxs = np.where(freqs >= 0)  # Positive frequency indices
+    freqs_one = freqs[pos_idxs]
+    mag_one = magnitude[pos_idxs].copy()
+    
+    # Normalize one-sided magnitudes (double for energy conservation)
+    if N % 2 == 0:  # Even number of samples
+        mag_one[1:-1] *= 2  # Exclude DC (0) and Nyquist frequency
+    else:  # Odd number of samples
+        mag_one[1:] *= 2
+    
+    # Generate plots if requested
+    if do_plot:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        
+        # Time domain plot
+        ax1.plot(x, y)
+        ax1.set_title('Time Domain Signal')
+        ax1.set_xlabel('Time')
+        ax1.set_ylabel('Amplitude')
+        ax1.grid(True)
+        
+        # Frequency domain plot (one-sided)
+        ax2.plot(freqs_one, mag_one)
+        ax2.set_title('Frequency Domain (One-Sided)')
+        ax2.set_xlabel('Frequency [Hz]')
+        ax2.set_ylabel('Magnitude')
+        ax2.grid(True)
+        ax2.set_xlim(left=0)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    return freqs_one, mag_one
+
+# Example usage:
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
+    # Generate sample signal
+    fs = 500# Sampling frequency
+    t = np.arange(0, 2, 1/fs)  # Time vector (1 second duration)
+    signal = 3 * np.cos(2*np.pi*50*t) + 2 * np.sin(2*np.pi*120*t)-3+ 3 * np.cos(2*np.pi*51*t)
     
-    # Create data
-    x = np.linspace(-2, 2, 1000)
-    
-    # Different parameter configurations
-    y1 = smooth_step(x, x0=0, width=1)            # Basic step
-    y2 = smooth_step(x, x0=0, width=0.01)          # Steeper transition
-    y3 = smooth_step(x, x0=0.5, width=1)           # Shifted center
-    y4 = smooth_step(x, x0=-1, width=1, ymin=2, ymax=5)  # Different range
-    y5 = smooth_step(x, x0=0, width=1, direction='down') # Down step
-    
-    # Plot results
-    plt.figure(figsize=(10, 6))
-    
-    plt.plot(x, y1, 'b-', linewidth=2, label='Basic: center=0, width=1')
-    plt.plot(x, y2, 'r--', linewidth=2, label='Steep: width=0.5')
-    plt.plot(x, y3, 'g-.', linewidth=2, label='Shifted: center=0.5')
-    plt.plot(x, y4, 'm:', linewidth=2, label='Scaled: min=2, max=5')
-    plt.plot(x, y5, 'c-', linewidth=2, label='Down: direction="down"')
-    
-    # Styling
-    plt.title("Smooth Step Functions", fontsize=14)
-    plt.xlabel("Input (x)", fontsize=12)
-    plt.ylabel("Output", fontsize=12)
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend(fontsize=10)
-    plt.tight_layout()
-    plt.show()
+    # Call function with plotting
+    freqs, mag = fourier_transform(t, signal, do_plot=True)

@@ -127,7 +127,7 @@ class TiltedIsingChain:
         # flip_time_function = lambda t, args: smooth_square_wave(t, 0, 1, self.T, phase=0.0)
         
         floquent_H = [[H1,static_time_function],[H_flip,flip_time_function]]
-        result = qt.mesolve(floquent_H, initial_state, time_points,progress_bar='tqdm')
+        result = qt.mesolve(floquent_H, initial_state, time_points,options={"progress_bar":"tqdm"})
         return result.states
     
     def calculate_megnetizations(self, initial_state, num_cycles=50):
@@ -246,7 +246,8 @@ class TiltedIsingChain:
         floquent_H = [[H1,static_time_function],[H_flip,flip_time_function]]
         # calculate correlation function
         t_list = np.arange(0, num_cycles * self.T, self.T)
-        result = qt.correlation_2op_1t(floquent_H, initial_state, t_list, [], ops, ops,options={"progress_bar":"tqdm"})
+        # result = qt.correlation_2op_1t(floquent_H, initial_state, t_list, [], ops, ops,options={"progress_bar":"tqdm"})
+        result = qt.correlation_2op_1t(floquent_H, initial_state, t_list, [], ops, ops)
         return result
 
     def hamming_distance(self, initial_state, num_cycles=50):
@@ -262,6 +263,73 @@ class TiltedIsingChain:
             distance += one_site_corr
         distance = (1- distance / (self.num_qubits - 4)) / 2.0
         return distance
+
+    def expectation_z(self, initial_state, num_cycles=50):
+        """
+        Calculate expectation value of sigma_z for the system in exact simulation
+        Args:
+            initial_state: Initial quantum state as qt.Qobj or bitstring (e.g., "1010")
+            num_cycles: Number of evolution cycles
+        """
+        # Convert string input to quantum state
+        if isinstance(initial_state, str):
+            # Check length matches number of qubits
+            if len(initial_state) != self.num_qubits:
+                raise ValueError(f"Bitstring length ({len(initial_state)}) doesn't match"
+                                f" number of qubits ({self.num_qubits})")
+            
+            # Create computational basis state
+            basis_states = []
+            for bit in initial_state:
+                if bit == '0':
+                    basis_states.append(qt.basis(2, 0))
+                elif bit == '1':
+                    basis_states.append(qt.basis(2, 1))
+                else:
+                    raise ValueError(f"Invalid character '{bit}' in bitstring - must be 0 or 1")
+            
+            initial_state = qt.tensor(basis_states)
+
+        ops = []
+        for i in range(self.num_qubits):
+            op_list = [qt.qeye(2)] * self.num_qubits
+            op_list[i] = qt.sigmaz()
+            ops.append(qt.tensor(op_list))
+        
+        # Build full Hamiltonian operators
+        H1 = self.H1
+        H_flip = self.H_flip()
+        def static_time_function(t, args):
+            phase = t % self.T
+            if phase < self.T / 2:
+                return 1.0  # static hamiltonian during first half
+            else:
+                return 0.0
+        def flip_time_function(t, args):
+            phase = t % self.T
+            if phase < self.T / 2:
+                return 0.0 
+            else:
+                return 1.0  # flip hamiltonian during second half
+        floquent_H = [[H1,static_time_function],[H_flip,flip_time_function]]
+        # calculate correlation function
+        t_list = np.arange(0, num_cycles * self.T, self.T)
+        result = qt.mesolve(floquent_H, initial_state, t_list, [], ops, options={"progress_bar":"tqdm"})
+        return np.array(result.expect)
+
+    def life_time(self, initial_state, num_cycles=50):
+        """
+        Calculate life time of the system in exact simulation
+        Args:
+            initial_state: Initial quantum state as qt.Qobj or bitstring (e.g., "1010")
+            num_cycles: Number of evolution cycles
+        """
+        expectation_z = self.expectation_z(initial_state, num_cycles)
+        sign_z_0 = np.sign(expectation_z[:,0])
+        lambda_t = np.zeros(num_cycles)
+        for i in range(num_cycles):
+            lambda_t[i] = np.sum(sign_z_0 * expectation_z[:,i]) / self.num_qubits
+        return lambda_t
 
 class IsingChainSimulation:
     """circuit simulation of Ising Chain using qiskit
