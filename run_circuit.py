@@ -9,7 +9,7 @@ from tqdm import tqdm
 class TiltedIsingChain:
     """Tilted Ising Chain exact simulation using qutip
     """
-    def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01):
+    def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01, open_boundary=True):
         """
         Initialize the weakly tilted Ising chain
 
@@ -19,12 +19,14 @@ class TiltedIsingChain:
             J: Coupling strength between nearest neighbors
             h_y: Strength of transverse field (sigma_y term)
             epsilon: Small parameter for spin-flip precision
+            open_boundary: Boolean for open/closed boundary conditions
         """
         self.num_qubits = num_qubits
         self.h_z = h_z
         self.J = J
         self.h_y = h_y
         self.epsilon = epsilon
+        self.open_boundary = open_boundary
         self.T = 2.0  # Total period time
         
         # Create basis states
@@ -49,6 +51,12 @@ class TiltedIsingChain:
             op_list = [qt.qeye(2)] * self.num_qubits
             op_list[i] = qt.sigmaz()
             op_list[i+1] = qt.sigmaz()
+            H_terms.append(self.J * qt.tensor(op_list))
+        if not self.open_boundary:
+            # Add periodic boundary condition term
+            op_list = [qt.qeye(2)] * self.num_qubits
+            op_list[0] = qt.sigmaz()
+            op_list[-1] = qt.sigmaz()
             H_terms.append(self.J * qt.tensor(op_list))
         
         # Add sigma_y terms (transverse field)
@@ -334,7 +342,7 @@ class TiltedIsingChain:
 class IsingChainSimulation:
     """circuit simulation of Ising Chain using qiskit
     """
-    def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01):
+    def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01, open_boundary=True):
         """
         Initialize the weakly tilted Ising chain evolution simulator
         
@@ -350,6 +358,7 @@ class IsingChainSimulation:
         self.J = J
         self.h_y = h_y
         self.epsilon = epsilon
+        self.open_boundary = open_boundary
         self.T = 2.0  # Total period time
 
     def build_trotter_step_circuit(self, is_barrier=True):
@@ -422,6 +431,10 @@ class IsingChainSimulation:
                         
         for i in range(1,self.num_qubits - 1,2):
             qc.rzz(2 * self.J * time, i, i+1)  # Rzz(φ) = exp(-i φ/2 Z⊗Z)
+        
+        if not self.open_boundary:
+            # Add periodic boundary condition term
+            qc.rzz(2 * self.J * time, 0, self.num_qubits - 1)
                         
         # Apply rotation: Rz
         for i in range(self.num_qubits):
@@ -628,7 +641,7 @@ class IsingChainSimulation:
         # Create heatmap similar to reference image
         self.create_heatmap(mag_data, num_cycles)
 
-    def plot_heatmap_with_noise(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+    def plot_heatmap_with_noise(self, initial_state, noise_model='default', num_cycles=50, shots=5000):
         """
         Simulate evolution with noise and plot magnetization heatmap
         
@@ -639,7 +652,7 @@ class IsingChainSimulation:
             shots: Number of shots for each cycle
             
         """
-        if noise_model is None:
+        if noise_model == 'default':
             from qiskit_noise_model import get_noise_model
             noise_model = get_noise_model()
         # Simulate with noise model
@@ -648,7 +661,7 @@ class IsingChainSimulation:
         # Create heatmap similar to reference image
         self.create_heatmap(magnetization_time_2d, num_cycles)
 
-    def plot_heatmap_normalized(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+    def plot_heatmap_normalized(self, initial_state, noise_model='default', num_cycles=50, shots=5000):
         """
         Simulate evolution with noise and plot normalized magnetization heatmap.
         This normalizes the magnetization by the echo circuit evolution
@@ -659,7 +672,7 @@ class IsingChainSimulation:
             shots: Number of shots for each cycle
             
         """
-        if noise_model is None:
+        if noise_model == 'default':
             from qiskit_noise_model import get_noise_model
             noise_model = get_noise_model()
         
@@ -671,11 +684,11 @@ class IsingChainSimulation:
         # Create heatmap similar to reference image
         self.create_heatmap(magnetization_time_normalized, num_cycles)
 
-    def simulate_with_noise(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
-        if noise_model is None:
+    def simulate_with_noise(self, initial_state, noise_model='default', num_cycles=50, shots=5000):
+        if noise_model == 'default':
             from qiskit_noise_model import get_noise_model
             noise_model = get_noise_model()
-        simulator = AerSimulator(noise_model=noise_model)
+        simulator = AerSimulator(noise_model=noise_model,method='matrix_product_state')
         magnetization_time_2d = np.zeros((self.num_qubits, num_cycles))
         for i in tqdm(range(num_cycles)):
             qc = self.build_full_circuit(initial_state, i, is_barrier=False, is_measure=True)
@@ -693,7 +706,7 @@ class IsingChainSimulation:
         
         return magnetization_time_2d
 
-    def simulate_echo_circuit(self, initial_state, noise_model=None, num_cycles=50, shots=5000):
+    def simulate_echo_circuit(self, initial_state, noise_model='default', num_cycles=50, shots=5000):
         """
         Simulate echo circuit evolution with noise
         
@@ -706,7 +719,7 @@ class IsingChainSimulation:
         Returns:
             2D array of magnetizations over time
         """
-        if noise_model is None:
+        if noise_model == 'default':
             from qiskit_noise_model import get_noise_model
             noise_model = get_noise_model()
         
@@ -780,7 +793,7 @@ def plot_heatmap_circuit(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cy
     # Simulate and plot heatmap
     circuit_sim.plot_heatmap(initial_state, num_cycles)
 
-def plot_heatmap_circuit_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model=None):
+def plot_heatmap_circuit_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model='default'):
     """
     Plot magnetization heatmap for circuit simulation with noise
     
@@ -792,7 +805,7 @@ def plot_heatmap_circuit_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_st
         epsilon: Small parameter for spin-flip precision
         initial_state: Initial quantum state as bitstring (e.g., "1010")
         num_cycles: Number of evolution cycles
-        noise_model: Noise model for simulation (default: None)
+        noise_model: Noise model for simulation
     """
     
     # Create circuit simulation object
@@ -801,7 +814,7 @@ def plot_heatmap_circuit_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_st
     # Simulate and plot heatmap with noise
     circuit_sim.plot_heatmap_with_noise(initial_state, noise_model, num_cycles)
 
-def compare_difference(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50):
+def compare_difference(num_qubits, h_z, J, h_y, epsilon, initial_state, open_boundary=True, num_cycles=50):
     """
     Compare exact simulation with circuit simulation
     
@@ -812,15 +825,16 @@ def compare_difference(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycl
         h_y: Strength of transverse field (sigma_y term)
         epsilon: Small parameter for spin-flip precision
         initial_state: Initial quantum state as bitstring (e.g., "1010")
+        open_boundary: Whether to use open boundary conditions (default: True)
         num_cycles: Number of evolution cycles
     """
     
     # Exact simulation using QuTiP
-    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon)
+    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon, open_boundary)
     exact_magnetizations = exact_sim.calculate_megnetizations(initial_state, num_cycles)
     
     # Circuit simulation using Qiskit
-    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon, open_boundary)
     circuit_state = circuit_sim.simulate_statevector_evolution(initial_state, num_cycles)
     circuit_magnetizations = circuit_sim.calculate_magnetizations(circuit_state)
 
@@ -871,7 +885,7 @@ def compare_difference(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycl
 
     print("Max difference:", np.max(np.abs(circuit_magnetizations - exact_magnetizations)))
 
-def compare_difference_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model=None):
+def compare_difference_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_state, open_boundary=True, num_cycles=50, noise_model='default'):
     """
     Compare exact simulation with circuit simulation with noise
     
@@ -883,15 +897,16 @@ def compare_difference_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_stat
         epsilon: Small parameter for spin-flip precision
         initial_state: Initial quantum state as bitstring (e.g., "1010")
         num_cycles: Number of evolution cycles
+        open_boundary: Whether to use open boundary conditions (default: True)
         noise_model: Noise model for simulation (default: None)
     """
     
     # Exact simulation using QuTiP
-    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon)
+    exact_sim = TiltedIsingChain(num_qubits, h_z, J, h_y, epsilon, open_boundary)
     exact_magnetizations = exact_sim.calculate_megnetizations(initial_state, num_cycles)
     
     # Circuit simulation using Qiskit
-    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon)
+    circuit_sim = IsingChainSimulation(num_qubits, h_z, J, h_y, epsilon, open_boundary)
     circuit_state = circuit_sim.simulate_statevector_evolution(initial_state, num_cycles)
     circuit_magnetizations = circuit_sim.calculate_magnetizations(circuit_state)
 
@@ -941,7 +956,7 @@ def compare_difference_with_noise(num_qubits, h_z, J, h_y, epsilon, initial_stat
     plt.tight_layout()
     plt.show()
 
-def compare_difference_with_noise_echo(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model=None):
+def compare_difference_with_noise_echo(num_qubits, h_z, J, h_y, epsilon, initial_state, num_cycles=50, noise_model='default'):
     """
     Compare exact simulation with circuit simulation with noise and echo circuit
     
@@ -953,7 +968,7 @@ def compare_difference_with_noise_echo(num_qubits, h_z, J, h_y, epsilon, initial
         epsilon: Small parameter for spin-flip precision
         initial_state: Initial quantum state as bitstring (e.g., "1010")
         num_cycles: Number of evolution cycles
-        noise_model: Noise model for simulation (default: None)
+        noise_model: Noise model for simulation 
     """
     
     # Exact simulation using QuTiP
@@ -1023,3 +1038,4 @@ def compare_difference_with_noise_echo(num_qubits, h_z, J, h_y, epsilon, initial
     plt.colorbar(label=r'$\langle \sigma_z \rangle$')
     plt.tight_layout()
     plt.show()
+    transpile
