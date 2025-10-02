@@ -5,11 +5,12 @@ from qiskit.quantum_info import Statevector
 from qiskit_aer import StatevectorSimulator,AerSimulator
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from importlib import reload
 
 class TiltedIsingChain:
     """Tilted Ising Chain exact simulation using qutip
     """
-    def __init__(self, num_qubits, h_z, J, h_y, epsilon=0.01, open_boundary=True):
+    def __init__(self, num_qubits, h_z=1.5, J=2, h_y=0.5, epsilon=0.0, open_boundary=True):
         """
         Initialize the weakly tilted Ising chain
 
@@ -138,6 +139,98 @@ class TiltedIsingChain:
         result = qt.mesolve(floquent_H, initial_state, time_points,options={"progress_bar":"tqdm"})
         return result.states
     
+    def exact_time_evolution_hsf(self, initial_state, num_cycles=30):
+        """
+        without flip items,
+        Compute exact time evolution of magnetizations using QuTiP
+        
+        Args:
+            initial_state(qt.Qobj,str): Initial quantum state(e.g., "1010")
+            num_cycles: Number of evolution cycles
+            
+        Returns:
+            Final state after evolution
+        """
+        
+        # Build full Hamiltonian operators
+        H1 = self.H1
+        
+        total_time = num_cycles * self.T/2
+        time_points = np.arange(0,total_time,self.T)
+        # Convert string input to quantum state
+        if isinstance(initial_state, str):
+            # Check length matches number of qubits
+            if len(initial_state) != self.num_qubits:
+                raise ValueError(f"Bitstring length ({len(initial_state)}) doesn't match"
+                                f" number of qubits ({self.num_qubits})")
+            
+            # Create computational basis state
+            basis_states = []
+            for bit in initial_state:
+                if bit == '0':
+                    basis_states.append(qt.basis(2, 0))
+                elif bit == '1':
+                    basis_states.append(qt.basis(2, 1))
+                else:
+                    raise ValueError(f"Invalid character '{bit}' in bitstring - must be 0 or 1")
+            
+            initial_state = qt.tensor(basis_states)
+
+        result = qt.mesolve(H1, initial_state, time_points,options={"progress_bar":"tqdm"})
+        return result.states
+    
+    @staticmethod
+    def state_to_expectation(state:qt.Qobj | list[qt.Qobj]) -> np.ndarray:
+        """Convert quantum state(s) to expectation values of sigma_z for each qubit"""
+        if isinstance(state, list):
+            return np.array([TiltedIsingChain.state_to_expectation(s) for s in state])
+        num_qubits = int(np.log2(state.shape[0]))
+        expectations = np.zeros(num_qubits)
+        
+        for i in range(num_qubits):
+            op_list = [qt.qeye(2)] * num_qubits
+            op_list[i] = qt.sigmaz()
+            operator = qt.tensor(op_list)
+            expectations[i] = qt.expect(operator, state)
+        
+        return expectations
+    
+    @staticmethod
+    def state_to_hamming_distance(state:qt.Qobj | list[qt.Qobj],bulk=True) -> np.ndarray:
+        """Convert quantum state(s) to Hamming distance"""
+        if isinstance(state, list):
+            return np.array([TiltedIsingChain.state_to_hamming_distance(s) for s in state])
+        num_qubits = int(np.log2(state.shape[0]))
+        distance = 0.0
+        qrange = range(2,num_qubits-2) if bulk else range(num_qubits)
+        for i in qrange:
+            op_list = [qt.qeye(2)] * num_qubits
+            op_list[i] = qt.sigmaz()
+            operator = qt.tensor(op_list)
+            corr = qt.expect(operator, state)
+            distance += corr
+        distance = (1- distance / len(qrange)) / 2.0
+        return distance
+    
+    @staticmethod
+    def state_to_imbalance(state:qt.Qobj | list[qt.Qobj]) -> np.ndarray:
+        """Convert quantum state(s) to imbalance"""
+        if isinstance(state, list):
+            return np.array([TiltedIsingChain.state_to_imbalance(s) for s in state])
+        num_qubits = int(np.log2(state.shape[0]))
+        imbalance = 0.0
+        for i in range(num_qubits):
+            op_list = [qt.qeye(2)] * num_qubits
+            op_list[i] = qt.sigmaz()
+            operator = qt.tensor(op_list)
+            corr = qt.expect(operator, state)
+            if i % 2 == 0:
+                imbalance += corr
+            else:
+                imbalance -= corr
+        imbalance = imbalance / num_qubits
+        return imbalance
+    
     def calculate_megnetizations(self, initial_state, num_cycles=50):
         """
         Calculate magnetization versus time in exact simulation
@@ -158,7 +251,9 @@ class TiltedIsingChain:
         mag_data = qt.expect(e_ops,data)
         return mag_data
 
-    def plot_heatmap(self, initial_state, num_cycles=50, cmap='bwr'):
+
+
+    def plot_heatmap(self, initial_state, num_cycles=30, cmap='RdBu_r'):
         """
         Plot magnetization heatmap in exact simulation
         
@@ -168,7 +263,7 @@ class TiltedIsingChain:
             cmap: Color map (default: blue-white-red)
         """
         
-        mag_data = self.calculate_megnetizations(initial_state,num_cycles)
+        mag_data = self.calculate_megnetizatiossns(initial_state,num_cycles)
         # Create figure
         plt.figure(figsize=(10, 6))
         

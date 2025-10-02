@@ -95,8 +95,8 @@ coverage.xml
 *.iws
 
 # Jupyter Notebook
-.ipynb_checkpoints/
-*.ipynb
+# .ipynb_checkpoints/
+# *.ipynb
 
 # macOS
 .DS_Store
